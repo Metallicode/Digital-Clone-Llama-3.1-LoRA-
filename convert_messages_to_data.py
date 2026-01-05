@@ -1,55 +1,73 @@
 import json
+import re
 
 # --- CONFIGURATION ---
-INPUT_FILE = "messages.json"  # <--- RENAME THIS to your actual file name (e.g., 'message_1.json')
+INPUT_FILE = "messages.json"  # Ensure this matches your file name
 OUTPUT_FILE = "training_data.jsonl"
-MY_NAME = "Dominique QuantumShaman Grys"  # This acts as the "Assistant" (The Clone)
+MY_NAME = input("your name in the JSON\n")  # Must match exactly
 
-def fix_text(text):
-    """Fixes Facebook's broken unicode encoding (Hebrew characters)"""
-    if not text: return ""
+# List of garbage phrases to filter out
+BANNED_PHRASES = [
+    "sent a photo", "sent an attachment", "sent a sticker", 
+    "sent a video", "audio call", "video call", 
+    "missed your call", "waived at you", "unsent a message",
+    "reacted to your message", "created the group", "named the group"
+]
+
+def clean_text(text):
+    if not text: return None
+    
+    # 1. Fix Hebrew Encoding (Facebook Latin-1 Glitch)
     try:
-        # Facebook exports often double-encode non-Latin characters
-        return text.encode('latin1').decode('utf-8')
+        text = text.encode('latin1').decode('utf-8')
     except:
-        return text
+        pass
+        
+    # 2. REMOVE URLS (The New Feature)
+    # This Regex removes http, https, and www links
+    text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', '', text)
+    text = re.sub(r'www\S+', '', text)
+    
+    # 3. Remove "Facebook System Messages"
+    if any(phrase in text.lower() for phrase in BANNED_PHRASES):
+        return None
+        
+    # 4. Remove empty strings left after removing URLs
+    text = text.strip()
+    if len(text) < 2: 
+        return None
+        
+    return text
 
 def convert_data():
-    print(f"Loading {INPUT_FILE}...")
+    print(f"🧹 Cleaning {INPUT_FILE} (Removing URLs & System Spam)...")
     try:
         with open(INPUT_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except FileNotFoundError:
-        print(f"❌ Error: Could not find '{INPUT_FILE}'. Please check the file name.")
+        print(f"❌ Error: File '{INPUT_FILE}' not found.")
         return
 
     messages = data.get("messages", [])
-    # Facebook puts newest messages first. We need to reverse them to read like a story.
     messages.reverse() 
     
-    print(f"Found {len(messages)} raw messages. Processing...")
-
     conversations = []
-    buffer_user = []      # Store messages from the "Other Person"
-    buffer_assistant = [] # Store messages from "You" (Dom)
+    buffer_user = []
+    buffer_assistant = []
     
-    # We iterate through the chronological messages
     for msg in messages:
         sender = msg.get("sender_name", "Unknown")
-        content = msg.get("content", "")
+        raw_content = msg.get("content", "")
         
-        # Skip photos/stickers that have no text
-        if not content:
-            continue
+        # Apply the cleaner
+        content = clean_text(raw_content)
+        if not content: 
+            continue 
             
-        content = fix_text(content)
-
         if sender == MY_NAME:
-            # If "I" am speaking, this is the RESPONSE (Assistant)
             buffer_assistant.append(content)
         else:
-            # If "They" are speaking...
-            # 1. First, if we have a full exchange recorded (User spoke, then I replied), save it.
+            # If we have a full pair (User -> Me), save it
             if buffer_user and buffer_assistant:
                 conversations.append({
                     "messages": [
@@ -57,37 +75,24 @@ def convert_data():
                         {"role": "assistant", "content": "\n".join(buffer_assistant)}
                     ]
                 })
-                # Clear buffers for the next conversation topic
                 buffer_user = []
                 buffer_assistant = []
             
-            # 2. If I was speaking (Assistant buffer has stuff) but now THEY are speaking again
-            # without me finishing a pair? That means I sent a message, then they sent a message
-            # (New topic). Clear my buffer to start fresh.
+            # Reset buffers if the flow breaks (Me -> User -> User)
             if buffer_assistant:
                  buffer_assistant = []
-                 buffer_user = [] # Hard reset to keep context clean
+                 buffer_user = []
 
-            # 3. Add their message to the "User" buffer
             buffer_user.append(content)
 
-    # Save the final exchange if exists
-    if buffer_user and buffer_assistant:
-        conversations.append({
-            "messages": [
-                {"role": "user", "content": "\n".join(buffer_user)},
-                {"role": "assistant", "content": "\n".join(buffer_assistant)}
-            ]
-        })
-
-    # Write to JSONL
-    print(f"Writing {len(conversations)} training pairs to {OUTPUT_FILE}...")
+    # Save to file
+    print(f"✨ Writing {len(conversations)} CLEAN pairs to {OUTPUT_FILE}...")
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
         for entry in conversations:
             json.dump(entry, f, ensure_ascii=False)
             f.write('\n')
             
-    print("✅ Done! You can now run the training script.")
+    print("✅ Done! Now re-run 'train_guaranteed.py' using this new file.")
 
 if __name__ == "__main__":
     convert_data()
